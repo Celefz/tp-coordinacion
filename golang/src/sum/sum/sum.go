@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"hash/crc32"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -84,6 +87,8 @@ func NewSum(config SumConfig) (*Sum, error) {
 }
 
 func (sum *Sum) Run() {
+	go sum.handleSignals()
+
 	go sum.controlExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleControlMessage(msg, ack, nack)
 	})
@@ -91,6 +96,26 @@ func (sum *Sum) Run() {
 	sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessage(msg, ack, nack)
 	})
+}
+
+func (sum *Sum) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	<-signals
+	slog.Info("SIGTERM signal received")
+
+	if err := sum.controlExchange.Close(); err != nil {
+		slog.Error("While closing control exchange", "err", err)
+	}
+	for _, exchange := range sum.outputExchanges {
+		if err := exchange.Close(); err != nil {
+			slog.Error("While closing output exchange", "err", err)
+		}
+	}
+	if err := sum.inputQueue.Close(); err != nil {
+		slog.Error("While closing input queue", "err", err)
+	}
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
