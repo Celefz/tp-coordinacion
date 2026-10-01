@@ -112,6 +112,10 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID string) error
 		slog.Debug("While sending EOF message", "err", err)
 		return err
 	}
+
+	delete(aggregation.fruitItemMaps, clientID)
+	delete(aggregation.endOfRecordCounts, clientID)
+
 	return nil
 }
 

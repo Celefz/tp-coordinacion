@@ -2,6 +2,7 @@ package sum
 
 import (
 	"fmt"
+	"hash/crc32"
 	"log/slog"
 	"sync"
 
@@ -28,7 +29,7 @@ type SumConfig struct {
 
 type Sum struct {
 	inputQueue        middleware.Middleware
-	outputExchange    middleware.Middleware
+	outputExchanges   []middleware.Middleware
 	controlExchange   middleware.Middleware
 	fruitItemMaps     map[string]map[string]fruititem.FruitItem
 	mutex             sync.Mutex
@@ -45,27 +46,35 @@ func NewSum(config SumConfig) (*Sum, error) {
 		return nil, err
 	}
 
-	outputExchangeRouteKeys := make([]string, config.AggregationAmount)
-	for i := range config.AggregationAmount {
-		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
-	}
+	outputExchanges := make([]middleware.Middleware, 0, config.AggregationAmount)
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
-	if err != nil {
-		inputQueue.Close()
-		return nil, err
+	for i := 0; i < config.AggregationAmount; i++ {
+		routingKey := fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
+
+		outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{routingKey}, connSettings)
+		if err != nil {
+			inputQueue.Close()
+			for _, exchange := range outputExchanges {
+				exchange.Close()
+			}
+			return nil, err
+		}
+
+		outputExchanges = append(outputExchanges, outputExchange)
 	}
 
 	controlExchange, err := middleware.CreateExchangeMiddleware(config.SumPrefix+SUM_CONTROL_SUFFIX, []string{EOF_CONTROL_KEY}, connSettings)
 	if err != nil {
 		inputQueue.Close()
-		outputExchange.Close()
+		for _, exchange := range outputExchanges {
+			exchange.Close()
+		}
 		return nil, err
 	}
 
 	return &Sum{
 		inputQueue:        inputQueue,
-		outputExchange:    outputExchange,
+		outputExchanges:   outputExchanges,
 		controlExchange:   controlExchange,
 		fruitItemMaps:     map[string]map[string]fruititem.FruitItem{},
 		localProcessed:    map[string]int{},
@@ -229,23 +238,36 @@ func (sum *Sum) completeClient(clientID string) error {
 	sum.mutex.Unlock()
 
 	for _, fruitRecord := range fruitRecords {
-
 		message, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{fruitRecord})
-
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
 			return err
 		}
 
-		if err := sum.outputExchange.Send(*message); err != nil {
+		exchangeIndex := getExchangeIndex(
+			fruitRecord.Fruit,
+			uint32(len(sum.outputExchanges)),
+		)
+
+		if err := sum.outputExchanges[exchangeIndex].Send(*message); err != nil {
 			return err
 		}
 	}
-	eofMessage, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{})
 
+	eofMessage, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{})
 	if err != nil {
 		return err
 	}
 
-	return sum.outputExchange.Send(*eofMessage)
+	for _, exchange := range sum.outputExchanges {
+		if err := exchange.Send(*eofMessage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getExchangeIndex(fruit string, numExchanges uint32) int {
+	hash := crc32.ChecksumIEEE([]byte(fruit))
+	return int(hash % numExchanges)
 }
