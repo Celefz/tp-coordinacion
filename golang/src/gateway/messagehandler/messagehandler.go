@@ -8,7 +8,8 @@ import (
 )
 
 type MessageHandler struct {
-	clientID string
+	clientID     string
+	recordAmount int
 }
 
 func NewMessageHandler() MessageHandler {
@@ -18,13 +19,13 @@ func NewMessageHandler() MessageHandler {
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
+	messageHandler.recordAmount++
 	data := []fruititem.FruitItem{fruitRecord}
 	return inner.SerializeMessage(messageHandler.clientID, data)
 }
 
 func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
-	data := []fruititem.FruitItem{}
-	return inner.SerializeMessage(messageHandler.clientID, data)
+	return inner.SerializeEOFMessage(messageHandler.clientID, inner.EOF_START, messageHandler.recordAmount)
 }
 
 func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {

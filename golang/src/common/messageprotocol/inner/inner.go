@@ -8,9 +8,20 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
+const (
+	EOF_START     = "START"
+	EOF_PROCESSED = "PROCESSED"
+)
+
 type clientMessage struct {
 	ClientID string        `json:"client_id"`
 	Records  []interface{} `json:"records"`
+}
+
+type EOFMessage struct {
+	ClientID string `json:"client_id"`
+	Kind     string `json:"kind"`
+	Amount   int    `json:"amount"`
 }
 
 func serializeJson(message clientMessage) ([]byte, error) {
@@ -78,4 +89,28 @@ func DeserializeMessage(message *middleware.Message) (string, []fruititem.FruitI
 	}
 
 	return data.ClientID, fruitRecords, len(fruitRecords) == 0, nil
+}
+
+func SerializeEOFMessage(clientID string, kind string, amount int) (*middleware.Message, error) {
+	eofMessage := EOFMessage{
+		ClientID: clientID,
+		Kind:     kind,
+		Amount:   amount,
+	}
+	body, err := json.Marshal(eofMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	return &middleware.Message{Body: string(body)}, nil
+}
+
+func DeserializeEOFMessage(message *middleware.Message) (EOFMessage, error) {
+	var eofMessage EOFMessage
+
+	if err := json.Unmarshal([]byte(message.Body), &eofMessage); err != nil {
+		return EOFMessage{}, err
+	}
+
+	return eofMessage, nil
 }
