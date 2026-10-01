@@ -4,12 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/toprecords"
 )
 
 type JoinConfig struct {
@@ -114,25 +114,8 @@ func (join *Join) handleEndOfRecordsMessage(clientID string) error {
 		return nil
 	}
 
-	fruitTopRecords := join.buildFruitTop(clientID)
-	message, err := inner.SerializeMessage(clientID, fruitTopRecords)
-	if err != nil {
-		slog.Debug("While serializing top message", "err", err)
-		return err
-	}
-	if err := join.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err)
-		return err
-	}
-
-	eofMessage := []fruititem.FruitItem{}
-	message, err = inner.SerializeMessage(clientID, eofMessage)
-	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
-		return err
-	}
-	if err := join.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
+	if err := toprecords.Publish(clientID, join.buildFruitTop(clientID), join.outputQueue); err != nil {
+		slog.Debug("While publishing top and EOF messages", "err", err)
 		return err
 	}
 
@@ -144,10 +127,5 @@ func (join *Join) handleEndOfRecordsMessage(clientID string) error {
 
 func (join *Join) buildFruitTop(clientID string) []fruititem.FruitItem {
 	fruitItems := join.fruitItemMap[clientID]
-	sort.SliceStable(fruitItems, func(i, j int) bool {
-		return fruitItems[j].Less(fruitItems[i])
-	})
-	finalTopSize := min(join.topSize, len(fruitItems))
-
-	return fruitItems[:finalTopSize]
+	return toprecords.GetTop(fruitItems, join.topSize)
 }
