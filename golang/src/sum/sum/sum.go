@@ -121,66 +121,79 @@ func (sum *Sum) handleSignals() {
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
-	eofMessage, err := inner.DeserializeEOFMessage(&msg)
+	messageType, err := inner.DeserializeMessageType(&msg)
+	if err != nil {
+		slog.Error("While deserializing message type", "err", err)
+		return
+	}
 
-	if err == nil && eofMessage.Kind == inner.EOF_START {
+	switch messageType {
+	case inner.TYPE_EOF_MESSAGE:
+		eofCoordMessage, err := inner.DeserializeEOFMessage(&msg)
+		if err != nil {
+			slog.Error("While deserializing EOF message", "err", err)
+			return
+		}
+		if eofCoordMessage.Kind != inner.EOF_START {
+			slog.Error("Unexpected EOF message on input queue", "type", eofCoordMessage.Kind)
+			return
+		}
 		if err := sum.controlExchange.Send(msg); err != nil {
 			slog.Error("While sending EOF start message", "err", err)
 		}
 
-		return
-	}
+	case inner.TYPE_CLIENT_MESSAGE:
+		clientID, fruitRecords, _, err := inner.DeserializeMessage(&msg)
+		if err != nil {
+			slog.Error("While deserializing message", "err", err)
+			return
+		}
 
-	clientID, fruitRecords, _, err := inner.DeserializeMessage(&msg)
-	if err != nil {
-		slog.Error("While deserializing message", "err", err)
-		return
-	}
-
-	if err := sum.handleDataMessage(clientID, fruitRecords); err != nil {
-		slog.Error("While handling data message", "err", err)
+		if err := sum.handleDataMessage(clientID, fruitRecords); err != nil {
+			slog.Error("While handling data message", "err", err)
+		}
 	}
 }
 
 func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
-	eofMessage, err := inner.DeserializeEOFMessage(&msg)
+	eofCoordMessage, err := inner.DeserializeEOFMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing EOF message", "err", err)
 		return
 	}
 
-	switch eofMessage.Kind {
+	switch eofCoordMessage.Kind {
 
 	case inner.EOF_START:
-		if err := sum.handleEOFStart(eofMessage); err != nil {
+		if err := sum.handleEOFStart(eofCoordMessage); err != nil {
 			slog.Error("While handling EOF start", "err", err)
 		}
 
 	case inner.EOF_PROCESSED:
-		sum.handleProcessedCount(eofMessage)
+		sum.handleProcessedCount(eofCoordMessage)
 
 	default:
-		slog.Error("Unknown EOF message type", "type", eofMessage.Kind)
+		slog.Error("Unknown EOF message type", "type", eofCoordMessage.Kind)
 	}
 }
 
-func (sum *Sum) handleEOFStart(eofMessage inner.EOFMessage) error {
+func (sum *Sum) handleEOFStart(eofCoordMessage inner.EOFCoordMessage) error {
 	sum.mutex.Lock()
 
-	if _, exists := sum.expectedProcessed[eofMessage.ClientID]; exists {
+	if _, exists := sum.expectedProcessed[eofCoordMessage.ClientID]; exists {
 		sum.mutex.Unlock()
 		return nil
 	}
 
-	sum.expectedProcessed[eofMessage.ClientID] = eofMessage.Amount
-	localCount := sum.localProcessed[eofMessage.ClientID]
+	sum.expectedProcessed[eofCoordMessage.ClientID] = eofCoordMessage.Amount
+	localCount := sum.localProcessed[eofCoordMessage.ClientID]
 
 	sum.mutex.Unlock()
 
 	if localCount > 0 {
-		if err := sum.sendProcessedCount(eofMessage.ClientID, localCount); err != nil {
+		if err := sum.sendProcessedCount(eofCoordMessage.ClientID, localCount); err != nil {
 			return err
 		}
 	}
@@ -199,17 +212,17 @@ func (sum *Sum) sendProcessedCount(clientID string, amount int) error {
 	return sum.controlExchange.Send(*message)
 }
 
-func (sum *Sum) handleProcessedCount(eofMessage inner.EOFMessage) {
+func (sum *Sum) handleProcessedCount(eofCoordMessage inner.EOFCoordMessage) {
 	sum.mutex.Lock()
 
-	sum.totalProcessed[eofMessage.ClientID] += eofMessage.Amount
-	total := sum.totalProcessed[eofMessage.ClientID]
-	expected, exists := sum.expectedProcessed[eofMessage.ClientID]
+	sum.totalProcessed[eofCoordMessage.ClientID] += eofCoordMessage.Amount
+	total := sum.totalProcessed[eofCoordMessage.ClientID]
+	expected, exists := sum.expectedProcessed[eofCoordMessage.ClientID]
 
 	sum.mutex.Unlock()
 
 	if exists && total == expected {
-		if err := sum.completeClient(eofMessage.ClientID); err != nil {
+		if err := sum.completeClient(eofCoordMessage.ClientID); err != nil {
 			slog.Error("While completing client", "err", err)
 		}
 	}
@@ -279,13 +292,13 @@ func (sum *Sum) completeClient(clientID string) error {
 		}
 	}
 
-	eofMessage, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{})
+	eofCoordMessage, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{})
 	if err != nil {
 		return err
 	}
 
 	for _, exchange := range sum.outputExchanges {
-		if err := exchange.Send(*eofMessage); err != nil {
+		if err := exchange.Send(*eofCoordMessage); err != nil {
 			return err
 		}
 	}

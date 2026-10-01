@@ -9,19 +9,28 @@ import (
 )
 
 const (
+	TYPE_CLIENT_MESSAGE = "client"
+	TYPE_EOF_MESSAGE    = "eof"
+
 	EOF_START     = "START"
 	EOF_PROCESSED = "PROCESSED"
 )
 
 type clientMessage struct {
+	Type     string        `json:"type"`
 	ClientID string        `json:"client_id"`
 	Records  []interface{} `json:"records"`
 }
 
-type EOFMessage struct {
+type EOFCoordMessage struct {
+	Type     string `json:"type"`
 	ClientID string `json:"client_id"`
 	Kind     string `json:"kind"`
 	Amount   int    `json:"amount"`
+}
+
+type messageType struct {
+	Type string `json:"type"`
 }
 
 func serializeJson(message clientMessage) ([]byte, error) {
@@ -33,7 +42,21 @@ func deserializeJson(message []byte) (*clientMessage, error) {
 	if err := json.Unmarshal(message, &data); err != nil {
 		return nil, err
 	}
+	if data.Type != TYPE_CLIENT_MESSAGE {
+		return nil, errors.New("Message is not a client message")
+	}
 	return &data, nil
+}
+
+func DeserializeMessageType(message *middleware.Message) (string, error) {
+	var data messageType
+	if err := json.Unmarshal([]byte(message.Body), &data); err != nil {
+		return "", err
+	}
+	if data.Type != TYPE_CLIENT_MESSAGE && data.Type != TYPE_EOF_MESSAGE {
+		return "", errors.New("Unknown inner message type")
+	}
+	return data.Type, nil
 }
 
 func SerializeMessage(clientID string, fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
@@ -47,6 +70,7 @@ func SerializeMessage(clientID string, fruitRecords []fruititem.FruitItem) (*mid
 	}
 
 	clientRecords := clientMessage{
+		Type:     TYPE_CLIENT_MESSAGE,
 		ClientID: clientID,
 		Records:  data,
 	}
@@ -92,7 +116,8 @@ func DeserializeMessage(message *middleware.Message) (string, []fruititem.FruitI
 }
 
 func SerializeEOFMessage(clientID string, kind string, amount int) (*middleware.Message, error) {
-	eofMessage := EOFMessage{
+	eofMessage := EOFCoordMessage{
+		Type:     TYPE_EOF_MESSAGE,
 		ClientID: clientID,
 		Kind:     kind,
 		Amount:   amount,
@@ -105,11 +130,14 @@ func SerializeEOFMessage(clientID string, kind string, amount int) (*middleware.
 	return &middleware.Message{Body: string(body)}, nil
 }
 
-func DeserializeEOFMessage(message *middleware.Message) (EOFMessage, error) {
-	var eofMessage EOFMessage
+func DeserializeEOFMessage(message *middleware.Message) (EOFCoordMessage, error) {
+	var eofMessage EOFCoordMessage
 
 	if err := json.Unmarshal([]byte(message.Body), &eofMessage); err != nil {
-		return EOFMessage{}, err
+		return EOFCoordMessage{}, err
+	}
+	if eofMessage.Type != TYPE_EOF_MESSAGE {
+		return EOFCoordMessage{}, errors.New("Message is not an EOF message")
 	}
 
 	return eofMessage, nil
